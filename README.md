@@ -6,7 +6,7 @@
 
 团队此前用多张Excel手工比较入选率：分组分母不明、阈值更改缺少留痕、稀少样本的差异容易被过度解读。上游为统一技能测评和去标识筛选记录；本项目替代样本核对、差异计算和报告复核；下游由评估研究组讨论后续核查，不自动做录用决策。
 
-一天的剧本：09:00分析员登录；09:03查看 hengchi_candidates_202611.json 的800条样本与两组分母；09:08新建统一阈值65、差距提示线0.10的方案；09:10提交后台计算；09:12检查入选率/TPR/FPR及Wilson区间；09:15比较21档阈值的非支配前沿；09:20记录标签偏差与样本局限；09:25管理员确认最新复核为接受后归档；09:30只读复核员下载真实CSV。
+一天的剧本：09:00分析员登录；09:03查看 hengchi_candidates_202611.json 的800条样本与两组分母；09:08新建统一阈值65、差距提示线0.10的方案；09:10提交后台计算；09:12检查入选率/TPR/FPR及Wilson区间；09:15比较21档阈值的非支配前沿；09:18对阈值65与70两份方案建立对照，逐组核对都判对/仅基准判对/仅待审判对/都判错的配对计数与Holm校正结果；09:20记录标签偏差与样本局限；09:25管理员确认最新复核为接受后归档；09:30只读复核员下载真实CSV。
 
 ## 功能与角色
 
@@ -14,7 +14,8 @@
 - 分数线方案：统一阈值、数据集及人工差距提示线持久化。
 - 后台复核：Redis队列和独立Python worker；运行状态、计算结果和校验码写入PostgreSQL；worker重启恢复持久化的排队/运行任务。
 - 证据页：组间混淆计数、分母、Wilson95%区间、真实阈值前沿图。
-- 人工复核/归档：最新复核为接受才能由管理员归档，一次运行只归档一次；CSV下载与操作审计。
+- 方案对照：同批两份分数线方案逐组配对比较，列出都判对、仅基准判对、仅待审判对、都判错人数；双侧精确配对（McNemar）检验并按Holm法校正多组比较。样本按候选ID对齐：内容不同（ID集合或任一字段不一致）拒绝对照，仅排列不同仍可比较。无不一致判定时保留有效结果（p=1）。
+- 人工复核/归档：最新复核为接受才能由管理员归档，一次运行只归档一次；方案对照可单独归档（一次对照只归档一次，不经过单方案复核门禁）；两类归档的CSV下载与操作审计均可核对，旧数据升级后仍能单方案复核。
 
 |角色|权限|典型动作|
 |---|---|---|
@@ -42,9 +43,11 @@ SEED_DEMO=true自动建表及填充种子。自然键和固定种子ID保证重�
 
 阈值Pareto：扫描0至100、步长5的21个全组统一阈值；准确率为(TP+TN)/N，差距为最大与最小入选率差。若另一个阈值准确率不低、差距不高，且至少一项严格更好，当前阈值被支配。前沿仅供回顾性讨论，不自动推荐招聘决策。
 
+方案对照（精确配对检验）：仅接受两份**已完成**且样本内容一致的计算记录；按候选ID对齐，核对group/score/qualified全字段，ID集合或字段不一致即拒绝，记录顺序不影响结果。逐组按候选判定构造2×2配对表：都判对、仅基准判对（b）、仅待审判对（c）、都判错。对每组做双侧精确McNemar检验——不一致数 n=b+c 在零假设下服从 Binomial(n, 0.5)，双侧p为概率不超过观测点的取值之和；再以Holm-Bonferroni逐步法按复核组数校正，给出校正p与α=0.05下的显著性。b=c或无不一致判定（n=0）时p值恰为1，仍返回有效配对计数。全部概率在对数空间（lgamma）计算，满额5000条样本不会数值溢出。
+
 两算法均由Python真实计算；前端仅绘制持久化结果。输入至少20条、2至8组、最多5000条，分数必须有限且在[0,100]，候选ID唯一。阈值网格固定，无随机计算，样本JSON附SHA256用于复现。
 
-局限：模拟组别是复核批次；差异不直接代表因果或合规判断。标签可能存在偏差。Wilson为逐组区间，未做多重比较校正；小样本低于30条醒目标记。没有真实招聘服务连接、自动录用和个人画像。
+局限：模拟组别是复核批次；差异不直接代表因果或合规判断。标签可能存在偏差。Wilson为逐组区间，未做多重比较校正；小样本低于30条醒目标记。方案对照的Holm校正只覆盖该次对照的复核组族，校正后不显著不等于两方案等价；精确检验仅使用判定翻转的候选，不评价阈值的业务影响。没有真实招聘服务连接、自动录用和个人画像。
 
 ## 技术、目录与开发
 
@@ -55,13 +58,13 @@ SEED_DEMO=true自动建表及填充种子。自然键和固定种子ID保证重�
 |持久化|PostgreSQL16|
 |队列|Redis7、独立Python worker|
 
-frontend/src含api、stores、types、components/common、hooks、pages、router、utils、constants；backend/src含routes、controllers、services、models、schemas、middlewares、utils、constants、config；backend/scripts为seed；backend/migrations说明初始模型与生产变更约束。
+frontend/src含api、stores、types、components/common、hooks、pages、router、utils、constants；backend/src含routes、controllers、services、models、schemas、middlewares、utils、constants、config；backend/scripts为seed；backend/migrations说明初始模型与生产变更约束，002为方案对照结构升级。旧演示库启动时由config/schema.py幂等补齐scheme_comparisons表与audit_reports.comparison_id列，既有单方案数据与复核流程不变。
 
 本地开发：后端安装backend/requirements.txt，配置DATABASE_URL/REDIS_URL/JWT_SECRET后在backend目录`uvicorn src.main:app --reload`；另开`python -m src.worker`。前端`npm install && npm run dev`，开发请求需同源反向代理/api到后端；默认Docker已由Nginx配置此代理。
 
 环境变量：COMPOSE_PROJECT_NAME=fair-score；FRONTEND_PORT=18212；BACKEND_PORT=19212；DB_PORT=17712；JWT_SECRET签名密钥；SEED_DEMO自动种子开关。DATABASE_URL和REDIS_URL由Compose传入服务。双字体通过Google Fonts加载，网络不可用时使用浏览器衬线/无衬线回退，不影响业务。
 
-共享枚举：角色admin/analyst/viewer与运行状态queued/running/completed/failed定义于backend/src/constants/enums.py及frontend/src/constants/enums.ts；角色校验在backend/src/controllers/auth.py；运行状态变更在services/runs.py和worker.py，前端Status组件与Results页消费。复核decision为accepted/needs_attention，在schemas/review.py与前端constants/enums.ts及Reviews页保持一致。
+共享枚举：角色admin/analyst/viewer与运行状态queued/running/completed/failed定义于backend/src/constants/enums.py及frontend/src/constants/enums.ts；角色校验在backend/src/controllers/auth.py；运行状态变更在services/runs.py和worker.py，前端Status组件与Results页消费。复核decision为accepted/needs_attention，在schemas/review.py与前端constants/enums.ts及Reviews页保持一致。方案对照与归档目标（run_id或comparison_id二选一）由schemas/comparison.py、schemas/report.py校验，前端Compare页与Reviews页消费。
 
 测试脚本、真实截图、日志、TESTING.md均在批次test-artifacts/gb-2203目录，源码包不混入这些产物。数据库模式由SQLAlchemy初次初始化，未提供生产迁移回滚；当前异步任务适合单worker演示，未实现分布式租约和多worker去重。
 

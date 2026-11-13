@@ -5,3 +5,4 @@ from .run import AuditRun
 from .review import GroupReview
 from .report import AuditReport
 from .audit import AuditEvent
+from .comparison import SchemeComparison
